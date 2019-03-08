@@ -135,6 +135,22 @@
 		renesas,#wpf = <1>;
 	};
 
+	sd@ee100000 {
+		/delete-property/ iommus;
+	};
+
+	 sd@ee120000 {
+		/delete-property/ iommus;
+	};
+
+	sd@ee140000 {
+		/delete-property/ iommus;
+	};
+
+	sd@ee160000 {
+		/delete-property/ iommus;
+	};
+
 	vspi2: vspm@fe9c0000 {
 		compatible = "renesas,vspm";
 		reg = <0 0xfe9c0000 0 0x8000>, <0 0xfe9cf000 0 0x200>;
