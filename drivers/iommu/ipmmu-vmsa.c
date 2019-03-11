@@ -1,7 +1,7 @@
 /*
  * IPMMU VMSA
  *
- * Copyright (C) 2014 Renesas Electronics Corporation
+ * Copyright (C) 2014-2019 Renesas Electronics Corporation
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -26,6 +26,7 @@
 #include <linux/sizes.h>
 #include <linux/slab.h>
 #include <linux/sys_soc.h>
+#include <linux/pci.h>
 
 #if defined(CONFIG_ARM) && !defined(CONFIG_IOMMU_DMA)
 #include <asm/dma-iommu.h>
@@ -57,13 +58,11 @@ struct ipmmu_features {
 #endif
 };
 
-#ifdef CONFIG_RCAR_DDR_BACKUP
 struct hw_register {
 	char *reg_name;
 	unsigned int reg_offset;
 	unsigned int reg_data;
 };
-#endif
 
 struct ipmmu_vmsa_device {
 	struct device *dev;
@@ -76,11 +75,9 @@ struct ipmmu_vmsa_device {
 	spinlock_t lock;			/* Protects ctx and domains[] */
 	DECLARE_BITMAP(ctx, IPMMU_CTX_MAX);
 	struct ipmmu_vmsa_domain *domains[IPMMU_CTX_MAX];
-#ifdef CONFIG_RCAR_DDR_BACKUP
 	struct hw_register *reg_backup[IPMMU_CTX_MAX];
 	unsigned int *utlbs_val;
 	unsigned int *asids_val;
-#endif
 
 	struct iommu_group *group;
 	struct dma_iommu_mapping *mapping;
@@ -100,7 +97,6 @@ struct ipmmu_vmsa_domain {
 	struct mutex mutex;			/* Protects mappings */
 };
 
-#ifdef CONFIG_RCAR_DDR_BACKUP
 struct ipmmu_vmsa_backup {
 	struct device *dev;
 	struct list_head list;
@@ -108,7 +104,6 @@ struct ipmmu_vmsa_backup {
 
 static DEFINE_SPINLOCK(ipmmu_devices_backup_lock);
 static LIST_HEAD(ipmmu_devices_backup);
-#endif
 
 static struct ipmmu_vmsa_domain *to_vmsa_domain(struct iommu_domain *dom)
 {
@@ -422,7 +417,6 @@ static struct ipmmu_whitelist *r8a77990_whitelist[] = {
 #define IMUASID_ASID0_MASK		(0xff << 0)
 #define IMUASID_ASID0_SHIFT		0
 
-#ifdef CONFIG_RCAR_DDR_BACKUP
 #define HW_REGISTER_BACKUP_SIZE		ARRAY_SIZE(root_pgtable0_reg)
 static struct hw_register root_pgtable0_reg[] = {
 	{"IMTTLBR0",	IMTTLBR0,	0},
@@ -522,7 +516,6 @@ static struct hw_register *root_pgtable[IPMMU_CTX_MAX] = {
 	root_pgtable6_reg,
 	root_pgtable7_reg,
 };
-#endif /* CONFIG_RCAR_DDR_BACKUP */
 
 /* -----------------------------------------------------------------------------
  * Root device handling
@@ -752,9 +745,7 @@ static int ipmmu_domain_init_context(struct ipmmu_vmsa_domain *domain)
 		return ret;
 
 	domain->context_id = ret;
-#ifdef CONFIG_RCAR_DDR_BACKUP
 	domain->mmu->root->reg_backup[ret] = root_pgtable[ret];
-#endif
 
 	domain->iop = alloc_io_pgtable_ops(ARM_32_LPAE_S1, &domain->cfg,
 					   domain);
@@ -828,9 +819,7 @@ static void ipmmu_domain_destroy_context(struct ipmmu_vmsa_domain *domain)
 	ipmmu_ctx_write_all(domain, IMCTR, IMCTR_FLUSH);
 	ipmmu_tlb_sync(domain);
 
-#ifdef CONFIG_RCAR_DDR_BACKUP
 	domain->mmu->root->reg_backup[domain->context_id] = NULL;
-#endif
 
 	ipmmu_domain_free_context(domain->mmu->root, domain->context_id);
 }
@@ -1092,6 +1081,13 @@ static bool ipmmu_slave_whitelist(struct device *dev, u32 *ids)
 		goto exit;
 	}
 
+	/*
+	 * For R-Car Gen3 SoCs, use a white list to check the uTLB set up
+	 * For other SoCs, return true
+	 */
+	if (!mmu->features->whitelist)
+		return true;
+
 	if (!mmu->whitelist[0]) {
 		pr_debug("%s Whitelist not found on %s!!!\n",
 			 __func__, dev_name(mmu->dev));
@@ -1245,15 +1241,26 @@ error:
 	return ret;
 }
 
+static struct device *ipmmu_get_pci_host_device(struct device *dev)
+{
+	struct pci_dev *pdev = to_pci_dev(dev);
+	struct pci_bus *bus = pdev->bus;
+
+	/* Walk up to the root bus to look for PCI Host controller */
+	while (!pci_is_root_bus(bus))
+		bus = bus->parent;
+
+	return bus->bridge->parent;
+}
+
 static int ipmmu_add_device(struct device *dev)
 {
+	struct device *root_dev;
 	struct iommu_group *group;
-#ifdef CONFIG_RCAR_DDR_BACKUP
 	struct ipmmu_vmsa_backup *dev_backup;
 	struct iommu_fwspec *fwspec;
 	struct ipmmu_vmsa_device *mmu;
 	unsigned int *utlbs_val, *asids_val;
-#endif
 
 	/*
 	 * Only let through devices that have been verified in xlate()
@@ -1264,13 +1271,23 @@ static int ipmmu_add_device(struct device *dev)
 	if (IS_ENABLED(CONFIG_ARM) && !IS_ENABLED(CONFIG_IOMMU_DMA))
 		return ipmmu_init_arm_mapping(dev);
 
+	/*
+	 * The IOMMU can't distinguish between different PCI Functions.
+	 * Use PCI Host controller as a proxy for all connected PCI devices
+	 */
+	if (dev_is_pci(dev)) {
+		root_dev = ipmmu_get_pci_host_device(dev);
+
+		if (root_dev->iommu_group)
+			dev->iommu_group = root_dev->iommu_group;
+	}
+
 	group = iommu_group_get_for_dev(dev);
 	if (IS_ERR(group))
 		return PTR_ERR(group);
 
 	iommu_group_put(group);
 
-#ifdef CONFIG_RCAR_DDR_BACKUP
 	dev_backup = kzalloc(sizeof(*dev_backup), GFP_KERNEL);
 	dev_backup->dev = dev;
 	fwspec = dev->iommu_fwspec;
@@ -1290,14 +1307,12 @@ static int ipmmu_add_device(struct device *dev)
 
 	mmu->utlbs_val = utlbs_val;
 	mmu->asids_val = asids_val;
-#endif
 
 	return 0;
 }
 
 static void ipmmu_remove_device(struct device *dev)
 {
-#ifdef CONFIG_RCAR_DDR_BACKUP
 	struct ipmmu_vmsa_device *mmu = to_ipmmu(dev);
 	struct ipmmu_vmsa_backup *slave_dev;
 
@@ -1312,7 +1327,6 @@ static void ipmmu_remove_device(struct device *dev)
 
 	kfree(mmu->utlbs_val);
 	kfree(mmu->asids_val);
-#endif
 
 	arm_iommu_detach_device(dev);
 	iommu_group_remove_device(dev);
@@ -1609,7 +1623,6 @@ static int ipmmu_remove(struct platform_device *pdev)
 }
 
 #ifdef CONFIG_PM_SLEEP
-#ifdef CONFIG_RCAR_DDR_BACKUP
 static int ipmmu_utlbs_backup(struct ipmmu_vmsa_device *mmu)
 {
 	unsigned int i;
@@ -1741,11 +1754,9 @@ static int ipmmu_domain_restore_context(struct ipmmu_vmsa_domain *domain)
 
 	return 0;
 }
-#endif /* CONFIG_RCAR_DDR_BACKUP */
 
 static int ipmmu_suspend(struct device *dev)
 {
-#ifdef CONFIG_RCAR_DDR_BACKUP
 	unsigned int i;
 	struct ipmmu_vmsa_device *mmu = dev_get_drvdata(dev);
 
@@ -1761,14 +1772,12 @@ static int ipmmu_suspend(struct device *dev)
 		}
 	else
 		ipmmu_utlbs_backup(mmu);
-#endif
 
 	return 0;
 }
 
 static int ipmmu_resume(struct device *dev)
 {
-#ifdef CONFIG_RCAR_DDR_BACKUP
 	unsigned int i;
 	struct ipmmu_vmsa_device *mmu = dev_get_drvdata(dev);
 
@@ -1782,7 +1791,6 @@ static int ipmmu_resume(struct device *dev)
 		}
 	else
 		ipmmu_utlbs_restore(mmu);
-#endif
 
 	return 0;
 }
