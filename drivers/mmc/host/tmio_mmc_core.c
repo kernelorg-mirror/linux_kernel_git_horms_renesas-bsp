@@ -1044,8 +1044,10 @@ static void tmio_mmc_finish_request(struct tmio_mmc_host *host)
 		tmio_mmc_abort_dma(host);
 	}
 
-	if (host->check_scc_error && host->check_scc_error(host))
-		mrq->cmd->error = -EILSEQ;
+	if (host->check_scc_error && host->check_scc_error(host)) {
+		/* re-tuning runs before next request */
+		mmc_retune_needed(host->mmc);
+	}
 
 	/* If SET_BLOCK_COUNT, continue with main command */
 	if (host->mrq && !mrq->cmd->error) {
