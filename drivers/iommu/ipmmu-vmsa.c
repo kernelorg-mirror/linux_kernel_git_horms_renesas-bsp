@@ -763,8 +763,8 @@ static int ipmmu_domain_init_context(struct ipmmu_vmsa_domain *domain)
 
 	/*
 	 * TTBCR
-	 * We use long descriptors with inner-shareable WBWA tables and allocate
-	 * the whole 32-bit VA space to TTBR0.
+	 * We use long descriptors and allocate the whole 32-bit VA space to
+	 * TTBR0.
 	 */
 	if (domain->mmu->features->twobit_imttbcr_sl0)
 		tmp = IMTTBCR_SL0_TWOBIT_LVL_1;
@@ -773,8 +773,7 @@ static int ipmmu_domain_init_context(struct ipmmu_vmsa_domain *domain)
 
 	ipmmu_ctx_write_root(domain, IMTTBCR,
 			     ipmmu_ctx_read_root(domain, IMTTBCR) |
-			     IMTTBCR_EAE | IMTTBCR_SH0_INNER_SHAREABLE |
-			     IMTTBCR_ORGN0_WB_WA | IMTTBCR_IRGN0_WB_WA | tmp);
+			     IMTTBCR_EAE | tmp);
 
 	/* MAIR0 */
 	ipmmu_ctx_write_root(domain, IMMAIR0,
