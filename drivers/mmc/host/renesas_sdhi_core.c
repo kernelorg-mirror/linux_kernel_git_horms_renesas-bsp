@@ -398,6 +398,12 @@ static void renesas_sdhi_prepare_hs400_tuning(struct mmc_host *mmc,
 	sd_scc_write32(host, priv, SH_MOBILE_SDHI_SCC_DT2FF,
 		       priv->scc_tappos_hs400);
 
+	if (priv->hs400_scc_correction_disabled)
+		sd_scc_write32(host, priv, SH_MOBILE_SDHI_SCC_RVSCNTL,
+			       ~SH_MOBILE_SDHI_SCC_RVSCNTL_RVSEN &
+			       sd_scc_read32(host, priv,
+					     SH_MOBILE_SDHI_SCC_RVSCNTL));
+
 	sd_scc_write32(host, priv, SH_MOBILE_SDHI_SCC_TMPPORT2,
 		       (SH_MOBILE_SDHI_SCC_TMPPORT2_HS400EN |
 			SH_MOBILE_SDHI_SCC_TMPPORT2_HS400OSEL) |
@@ -650,7 +656,7 @@ static bool renesas_sdhi_check_scc_error(struct tmio_mmc_host *host)
 	if (!(host->mmc->ios.timing == MMC_TIMING_UHS_SDR104) &&
 	    !(host->mmc->ios.timing == MMC_TIMING_MMC_HS200) &&
 	    !(host->mmc->ios.timing == MMC_TIMING_MMC_HS400 &&
-	      !host->hs400_use_4tap))
+	      !host->hs400_use_4tap && !priv->hs400_scc_correction_disabled))
 		return false;
 
 	if (host->mmc->doing_retune == 1)
@@ -863,6 +869,8 @@ int renesas_sdhi_probe(struct platform_device *pdev,
 		host->bus_shift = of_data->bus_shift;
 		priv->scc_offset = of_data->scc_offset;
 		priv->scc_base_f_min = of_data->scc_base_f_min;
+		priv->hs400_scc_correction_disabled =
+			of_data->hs400_scc_correction_disabled;
 	}
 
 	host->write16_hook	= renesas_sdhi_write16_hook;
